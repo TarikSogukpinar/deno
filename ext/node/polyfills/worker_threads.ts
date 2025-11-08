@@ -64,9 +64,12 @@ interface WorkerOnlineMsg {
 }
 
 function isWorkerOnlineMsg(data: unknown): data is WorkerOnlineMsg {
-  return typeof data === "object" && data !== null &&
+  return (
+    typeof data === "object" &&
+    data !== null &&
     ObjectHasOwn(data, "type") &&
-    (data as { "type": unknown })["type"] === "WORKER_ONLINE";
+    (data as { type: unknown })["type"] === "WORKER_ONLINE"
+  );
 }
 
 export interface WorkerOptions {
@@ -99,19 +102,17 @@ class NodeWorker extends EventEmitter {
   #messagePromise = undefined;
   #controlPromise = undefined;
   #workerOnline = false;
+  #exited = false;
   // "RUNNING" | "CLOSED" | "TERMINATED"
   // "TERMINATED" means that any controls or messages received will be
   // discarded. "CLOSED" means that we have received a control
   // indicating that the worker is no longer running, but there might
   // still be messages left to receive.
   #status = "RUNNING";
-
   // https://nodejs.org/api/worker_threads.html#workerthreadid
   threadId = this.#id;
   // https://nodejs.org/api/worker_threads.html#workerresourcelimits
-  resourceLimits: Required<
-    NonNullable<WorkerOptions["resourceLimits"]>
-  > = {
+  resourceLimits: Required<NonNullable<WorkerOptions["resourceLimits"]>> = {
     maxYoungGenerationSizeMb: -1,
     maxOldGenerationSizeMb: -1,
     codeRangeSizeMb: -1,
@@ -126,14 +127,15 @@ class NodeWorker extends EventEmitter {
       !(specifier.protocol === "data:" || specifier.protocol === "file:")
     ) {
       throw new TypeError(
-        "node:worker_threads support only 'file:' and 'data:' URLs",
+        "node:worker_threads support only 'file:' and 'data:' URLs"
       );
     }
     if (options?.eval) {
-      const code = typeof specifier === "string"
-        ? encodeURIComponent(specifier)
-        // deno-lint-ignore prefer-primordials
-        : specifier.toString();
+      const code =
+        typeof specifier === "string"
+          ? encodeURIComponent(specifier)
+          : // deno-lint-ignore prefer-primordials
+            specifier.toString();
       specifier = `data:text/javascript,${code}`;
     } else if (
       !(typeof specifier === "object" && specifier.protocol === "data:")
@@ -159,12 +161,15 @@ class NodeWorker extends EventEmitter {
     if (options?.env) {
       env_ = JSONParse(JSONStringify(options?.env));
     }
-    const serializedWorkerMetadata = serializeJsMessageData({
-      workerData: options?.workerData,
-      environmentData: environmentData,
-      env: env_,
-      isWorkerThread: true,
-    }, options?.transferList ?? []);
+    const serializedWorkerMetadata = serializeJsMessageData(
+      {
+        workerData: options?.workerData,
+        environmentData: environmentData,
+        env: env_,
+        isWorkerThread: true,
+      },
+      options?.transferList ?? []
+    );
     const id = op_create_worker(
       {
         // deno-lint-ignore prefer-primordials
@@ -176,7 +181,7 @@ class NodeWorker extends EventEmitter {
         workerType: "node",
         closeOnIdle: true,
       },
-      serializedWorkerMetadata,
+      serializedWorkerMetadata
     );
     this.#id = id;
     this.threadId = id;
@@ -227,16 +232,28 @@ class NodeWorker extends EventEmitter {
       }
 
       switch (type) {
-        case 1: { // TerminalError
+        case 1: {
+          // TerminalError
           this.#status = "CLOSED";
+          if (!this.#exited) {
+            this.#exited = true;
+            this.emit("exit", 1);
+          }
+          return;
         } /* falls through */
-        case 2: { // Error
+        case 2: {
+          // Error
           this.#handleError(data);
           break;
         }
-        case 3: { // Close
+        case 3: {
+          // Close
           debugWT(`Host got "close" message from worker: ${this.#name}`);
           this.#status = "CLOSED";
+          if (!this.#exited) {
+            this.#exited = true;
+            this.emit("exit", 0);
+          }
           return;
         }
         default: {
@@ -269,7 +286,8 @@ class NodeWorker extends EventEmitter {
         // only emit "online" event once, and since the message
         // has to come before user messages, we are safe to assume
         // it came from us
-        !this.#workerOnline && isWorkerOnlineMsg(message)
+        !this.#workerOnline &&
+        isWorkerOnlineMsg(message)
       ) {
         this.#workerOnline = true;
         this.emit("online");
@@ -292,14 +310,14 @@ class NodeWorker extends EventEmitter {
       const transfer = webidl.converters["sequence<object>"](
         transferOrOptions,
         prefix,
-        "Argument 2",
+        "Argument 2"
       );
       options = { transfer };
     } else {
       options = webidl.converters.StructuredSerializeOptions(
         transferOrOptions,
         prefix,
-        "Argument 2",
+        "Argument 2"
       );
     }
     const { transfer } = options;
@@ -314,7 +332,6 @@ class NodeWorker extends EventEmitter {
     if (this.#status !== "TERMINATED") {
       this.#status = "TERMINATED";
       op_host_terminate_worker(this.#id);
-      this.emit("exit", 0);
     }
     return PromiseResolve(0);
   }
@@ -341,8 +358,8 @@ let workerData: unknown = null;
 let environmentData = new SafeMap();
 
 // Like https://github.com/nodejs/node/blob/48655e17e1d84ba5021d7a94b4b88823f7c9c6cf/lib/internal/event_target.js#L611
-interface NodeEventTarget extends
-  Pick<
+interface NodeEventTarget
+  extends Pick<
     EventEmitter,
     "eventNames" | "listenerCount" | "emit" | "removeAllListeners"
   > {
@@ -367,18 +384,20 @@ internals.__initWorkerThreads = (
   runningOnMainThread: boolean,
   workerId,
   maybeWorkerMetadata,
-  moduleSpecifier,
+  moduleSpecifier
 ) => {
   isMainThread = runningOnMainThread;
 
   defaultExport.isMainThread = isMainThread;
   // fake resourceLimits
-  resourceLimits = isMainThread ? {} : {
-    maxYoungGenerationSizeMb: 48,
-    maxOldGenerationSizeMb: 2048,
-    codeRangeSizeMb: 0,
-    stackSizeMb: 4,
-  };
+  resourceLimits = isMainThread
+    ? {}
+    : {
+        maxYoungGenerationSizeMb: 48,
+        maxOldGenerationSizeMb: 2048,
+        codeRangeSizeMb: 0,
+        stackSizeMb: 4,
+      };
   defaultExport.resourceLimits = resourceLimits;
 
   if (!isMainThread) {
@@ -389,7 +408,7 @@ internals.__initWorkerThreads = (
       globalThis.require = createRequire(
         StringPrototypeStartsWith(moduleSpecifier, "data:")
           ? `${Deno.cwd()}/[worker eval]`
-          : moduleSpecifier,
+          : moduleSpecifier
       );
     }
 
@@ -422,7 +441,7 @@ internals.__initWorkerThreads = (
     parentPort.off = parentPort.removeListener = function (
       this: ParentPort,
       name,
-      listener,
+      listener
     ) {
       this.removeEventListener(name, listeners.get(listener)!);
       listeners.delete(listener);
@@ -431,7 +450,7 @@ internals.__initWorkerThreads = (
     parentPort.on = parentPort.addListener = function (
       this: ParentPort,
       name,
-      listener,
+      listener
     ) {
       // deno-lint-ignore no-explicit-any
       const _listener = (ev: any) => {
@@ -478,11 +497,9 @@ internals.__initWorkerThreads = (
 
     if (isWorkerThread) {
       // Notify the host that the worker is online
-      parentPort.postMessage(
-        {
-          type: "WORKER_ONLINE",
-        } satisfies WorkerOnlineMsg,
-      );
+      parentPort.postMessage({
+        type: "WORKER_ONLINE",
+      } satisfies WorkerOnlineMsg);
     }
   }
 };
@@ -512,9 +529,9 @@ export function moveMessagePortToContext() {
  * @returns {object | undefined}
  */
 export function receiveMessageOnPort(port: MessagePort): object | undefined {
-  if (!(ObjectPrototypeIsPrototypeOf(MessagePortPrototype, port))) {
+  if (!ObjectPrototypeIsPrototypeOf(MessagePortPrototype, port)) {
     const err = new TypeError(
-      'The "port" argument must be a MessagePort instance',
+      'The "port" argument must be a MessagePort instance'
     );
     err["code"] = "ERR_INVALID_ARG_TYPE";
     throw err;
@@ -574,7 +591,7 @@ function webMessagePortToNodeMessagePort(port: MessagePort) {
   port.off = port.removeListener = function (
     this: MessagePort,
     name,
-    listener,
+    listener
   ) {
     if (name == "message") {
       port.removeEventListener("message", listeners.get(listener)!);
@@ -606,12 +623,7 @@ function webMessagePortToNodeMessagePort(port: MessagePort) {
       }
     }
 
-    return FunctionPrototypeCall(
-      webPostMessage,
-      port,
-      message,
-      transferList,
-    );
+    return FunctionPrototypeCall(webPostMessage, port, message, transferList);
   };
   port.once = (name: string | symbol, listener) => {
     const fn = (event) => {
